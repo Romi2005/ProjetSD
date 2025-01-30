@@ -1,0 +1,492 @@
+---
+title: |
+       | Analyse statistique des crimes et délits enregistrés \vspace{0.2cm}
+       | par la Police et la Gendarmerie
+author: 
+  - Lawani - Djahoua - Simal
+date: "`r format(Sys.time(),'%d %B %Y')`"
+geometry: margin=1cm
+abstract: "Préparation des données en vue d'une analyse exploratoire"
+fontsize: 11pt
+documentclass: "article"
+output: 
+  pdf_document:
+    number_section: true
+    fig_caption: true
+    toc: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE,
+	fig.width = 5,
+	fig.height = 3
+)
+
+```
+
+\newpage
+
+# Chargement des librairies
+
+```{r echo=TRUE}
+library(openxlsx) 
+library(stringr)
+library(dplyr) 
+library(tidyr)   
+library(data.table) 
+library(stringr)
+```
+
+* Via le package openxlsx nous allons faire usage des fonctions : getSheetNames, read.xlsx, createWorkbook, addWorksheet, writeData, saveWorkbook
+* via dplyr nous allons faire usage des fonctions : mutate, select, relocate et de l'opérateur %>% 
+* Via tidyr nous allons faire usage de la fonction  pivot_longer  
+* Via data.table nous allons faire usage des fonctions : rbindlist, transpose
+
+
+## 1 - Visualisation du nombre de feuilles disponibles ainsi que leurs noms
+
+```{r include=TRUE}
+
+openxlsx::getSheetNames(file = "../Data/crimes-et-delits.xlsx") -> NameSheet
+print(NameSheet)
+
+length(NameSheet)
+
+```
+
+
+Nous avons donc 20 feuilles dans notre classeur sans compter la feuille de présentation.
+
+## 2 - Importation automatisée de l'ensemble des feuilles
+
+```{r include=TRUE}
+
+datalist = list()
+
+for (i in 2 : length(NameSheet)){
+  
+  # Récuperation des données de la n-ème feuille
+  openxlsx::read.xlsx(xlsxFile = "../Data/crimes-et-delits.xlsx",
+                      colNames = FALSE,
+                      sheet = NameSheet[[i]]) -> datalist[[i-1]]
+  
+}
+
+class(datalist)
+length(datalist)
+
+```
+
+
+
+## 4 - Préparation des données de Police Nationale (PN) et Gendarmerie Nationale (GN)
+
+### Préparation des données relatives à la Police Nationale 
+
+```{r include=TRUE}
+
+police_input = datalist[1:10]
+
+police_output = list()
+
+for (i in 1 : length(police_input)){
+  data = police_input[[i]]
+  
+  # Supréssions de la première colonne
+  data %>% select(-c(X1)) -> data
+  
+  # Transposons les lignes en colonnes et les colonnes en lignes 
+  data %>% data.table::transpose() -> data
+  
+  # Modifions le nom des colonnes en leur donnant les valeurs du 1er enregistrement qui 
+  #est le vrai nom des colonnes
+  colnames(data)  = data[1,]
+  data = data[-c(1),]
+  
+  # Réalisons un opération de pivotage 
+  data %>% tidyr::pivot_longer(names_to = "Infraction",
+                               values_to = "Volume",
+                               cols = !c(1:3)) -> data
+  
+  
+  # Rendons les variables au bon type 
+  data %>% mutate(Année = 2011+i,
+                  Service = "PN",
+                  Service = factor(Service),
+                  Compétence = factor(`Libellé index \\ CSP`),
+                  Périmètre = factor(Périmètres),
+                  Code_Département = factor(Départements),
+                  Volume = as.numeric(Volume)) %>% 
+           select(c(Année,Code_Département,Service,Périmètre,
+                    Compétence,Infraction,Volume)) -> police_output[[i]]
+  
+}
+
+```
+
+On constate que dans les dataset pour les années 2012 à 2020 on a "Règlements de compte entre malfaireurs" et pour l'année 2021 nous avons "Règlements de compte entre malfaiteurs"
+
+### Remplacement de "Règlements de compte entre malfaireurs" par "Règlements de compte entre malfaiteurs"
+
+```{r include=TRUE}
+
+for (i in 1:10){
+  police_output[[i]]$Infraction = ifelse(
+    police_output[[i]]$Infraction == "Règlements de compte entre malfaireurs",
+    "Règlements de compte entre malfaiteurs",police_output[[i]]$Infraction)
+}
+
+# Vérification ####
+unique(police_output[[9]]$Infraction)
+
+```
+
+### Fusion des dataframes relatives à PN
+
+```{r include = TRUE}
+
+police_output = data.table::rbindlist(police_output)
+
+str(police_output)
+
+```
+
+### Préparation des données relatives à la Gendarmerie Nationale 
+
+```{r include=TRUE}
+
+gendarmerie_input = datalist[11:20]
+
+gendarmerie_output = list()
+
+for (i in 1 : length(gendarmerie_input)){
+  data = gendarmerie_input[[i]]
+
+  # Supréssions de la première colonne
+  data %>% select(-c(X1)) -> data
+  
+  # Transposons les lignes en colonnes et les colonnes en lignes 
+  data %>% data.table::transpose() -> data
+  
+  # Modifions le nom des colonnes en leur donnant les valeurs du 
+  #1er enregistrement qui est le vrai nom des colonnes
+  
+  colnames(data)  = data[1,]
+  data = data[-c(1),]
+  
+  # Réalisons un opération de pivotage 
+  data %>% tidyr::pivot_longer(names_to = "Infraction",
+                                values_to = "Volume",
+                                cols = !c(Départements, `Libellé index \\ CGD`)) -> data
+
+  
+  # Rendons les variables au bon type 
+  data %>% mutate(Code_Département = factor(Départements),
+                  Année = 2011+i,
+                  Service = "GN",
+                  Périmètre = NA,
+                  Service = factor(Service),
+                  Compétence = factor(`Libellé index \\ CGD`),
+                  Volume = as.numeric(Volume)) %>% 
+            select(Année,Code_Département,Service,Périmètre,Compétence,
+                   Infraction,Volume) -> gendarmerie_output[[i]]
+  
+}
+
+```
+
+
+#### Remplacement de "Règlements de compte entre malfaireurs" par "Règlements de compte entre malfaiteurs"
+
+```{r include = TRUE}
+
+for (i in 1:10){
+  gendarmerie_output[[i]]$Infraction = ifelse(
+    gendarmerie_output[[i]]$Infraction == "Règlements de compte entre malfaireurs",
+    "Règlements de compte entre malfaiteurs",gendarmerie_output[[i]]$Infraction)
+}
+
+# Vérification ####
+unique(gendarmerie_output[[9]]$Infraction)
+
+```
+
+
+### Fusion des dataframes relatives à GN
+
+```{r include = TRUE}
+
+gendarmerie_output = data.table::rbindlist(gendarmerie_output)
+
+str(gendarmerie_output)
+
+```
+
+### Fusion des données de PN et de GN dans un dataset 
+
+```{r include=TRUE}
+
+dataset = rbind(police_output, gendarmerie_output)
+dataset %>% mutate(Année = factor(Année)) -> dataset
+
+```
+
+
+### Visualisation de la structure de l'objet dataset
+
+```{r include=TRUE}
+
+str(dataset)
+
+unique(dataset$Infraction)
+
+```
+
+ 
+
+### Affichage de 10 lignes pris aléatoirement dans notre dataset 
+
+```{r include=TRUE}
+row = sample(x = 1:dim(dataset)[1],
+             size = 10,
+             replace = FALSE)
+
+dataset[row,]
+
+```
+
+
+## 5 - Importation des données externes relatives aux départements et à la région 
+
+### Structure des fichiers
+
+```{r include=TRUE}
+readLines(con = "../Data/v_departement_2023.csv",
+          n = 3)
+
+readLines(con = "../Data/v_region_2023.csv",
+          n = 3)
+```
+
+Comme séparateur de champs on observe : ",". On remarque aussi la présence des noms des champs.
+
+
+### Importation des donnnées 
+
+#### Données relatives aux Départements
+
+```{r include=TRUE}
+
+departement = read.table(file = "../Data/v_departement_2023.csv", 
+                         header = TRUE,
+                         sep = ",",
+                         quote = "\"")
+
+str(departement) ; head(departement)
+
+```
+
+
+#### Données relatives aux Régions
+
+```{r include=TRUE}
+
+region = read.table(file = "../Data/v_region_2023.csv", 
+                    header = TRUE,
+                    sep = ",",
+                    quote = "\"")
+
+str(region) ; head(region)
+
+```
+
+
+#### Vérification du nombre de région dans les dataframes
+
+```{r include=TRUE}
+
+length(unique(region$REG))
+length(unique(departement$REG))
+
+```
+
+
+## 6 - Selection des variables d'intérêt 
+
+```{r include=TRUE}
+
+departement %>% select(c(DEP, REG, LIBELLE)) -> departement
+str(departement)
+
+region %>% select(REG, LIBELLE) -> region
+str(region)
+
+```
+
+
+## 5 - Réalisation d'une jointure des deux datasets 
+
+```{r include=TRUE}
+
+merge(x = departement, 
+      y = region,
+      by.x = "REG",
+      by.y = "REG") -> geographie
+
+head(geographie, n = 5) ; str(geographie)
+
+```
+
+
+### Renommage des noms des colonnes 
+
+```{r include=TRUE}
+
+geographie %>% mutate(Code_Département = factor(DEP),
+                   Code_Région = factor(REG),
+                   Nom_Département = factor(LIBELLE.x),
+                   Nom_Région = factor(LIBELLE.y)) %>% 
+               select(c(Code_Département,Code_Région,Nom_Département,Nom_Région)) -> geographie
+
+str(geographie)
+head(geographie, n=10)
+
+```
+
+
+## 7 - Rajout des informations sur la région et le département
+
+```{r include=TRUE}
+
+dataset = merge(x = dataset,
+                y = geographie,
+                by.x = "Code_Département",
+                by.y = "Code_Département")
+
+str(dataset)
+
+```
+
+
+
+#  Exportation des données dans un classeur Excel
+
+## 1 - Créons les jeux de données d'intérêt
+
+### jeu de données codification
+
+```{r include=TRUE}
+
+dataset %>% select(Infraction) %>%
+          unique() %>% 
+          mutate(Code = 1:104,
+                 Libellé = unique(Infraction)) %>% 
+          select(Code, Libellé) -> codification
+
+```
+
+
+
+
+### Jeu de données Délinquance 
+
+#### Fusion pour avoir le code des infractions et non les intilulé
+
+```{r include=TRUE}
+
+delinquance = merge(x = dataset,
+                     y = codification,
+                     by.x = "Infraction",
+                     by.y = "Libellé")
+
+
+```
+
+
+#### Visualisons le succès de l'opération
+
+```{r include=TRUE}
+
+str(delinquance)
+
+```
+
+
+
+#### Réordonnons les champs
+
+```{r include=TRUE}
+
+delinquance %>% mutate(Infraction = Code) %>% 
+                 relocate(Année,Code_Département,Nom_Département,Code_Région,Nom_Région,
+                          Service,Périmètre,Compétence,Infraction,Volume) %>% 
+                 select(-c(Code)) -> delinquance
+
+```
+
+
+#### Ordonnancement selon la variable date 
+
+```{r include=TRUE}
+
+delinquance = delinquance[order(delinquance$Année),]
+
+```
+
+
+## 2 - Exportation des données 
+
+### Création d'un Workbook 
+
+```{r include=TRUE}
+
+wb = openxlsx::createWorkbook()
+
+```
+
+
+### Création des feuilles de notre classeur 
+
+```{r include=TRUE}
+
+openxlsx::addWorksheet(wb, 
+                       sheetName = "Codification")
+
+openxlsx::addWorksheet(wb, 
+                       sheetName = "Délinquance")
+
+```
+
+
+### Ecriture des données dans les feuilles 
+
+```{r include=TRUE}
+openxlsx::writeData(wb,
+                    sheet = "Codification",
+                    x = codification)
+
+
+openxlsx::writeData(wb,
+                    sheet = "Délinquance",
+                    x = delinquance)
+```
+
+
+### Enregistrement du Workbook dans un classeur Excel nommé Délinquance.xlsx 
+
+```{r include=TRUE}
+
+openxlsx::saveWorkbook(wb,
+                       file = "../Data/Délinquance.xlsx",
+                       overwrite = TRUE)
+
+```
+
+
+

@@ -1,0 +1,692 @@
+---
+title: |
+  | Analyse statistique des crimes et délits enregistrés \vspace{0.2cm}
+  | par la Police et la Gendarmerie
+author: "Romuald DJAHOUA"
+date: "`r format(Sys.time(),'%d %B %Y')`"
+output:
+  pdf_document:
+    number_section: yes
+    fig_caption: yes
+    toc: yes
+  html_document:
+    toc: yes
+    df_print: paged
+  word_document:
+    toc: yes
+geometry: margin = 1cm
+fontsize: 12pt
+documentclass: article
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE,
+	fig.width = 11,
+	fig.height = 7,
+	fig.align = "center"
+)
+
+```
+
+\newpage
+
+# Chargement des librairies
+
+```{r chargement des librairies, warning=FALSE}
+library(dplyr) # %>% , mutate, select, relocate, summarise
+library(tidyr)
+library(ggplot2) 
+library(readxl) # read_xlsx
+library(treemapify) # treemap
+library(pheatmap) # pheatmap
+library(gridExtra)
+library(sf)
+library(tidytext) # reorder_within
+library(tinytex)
+```
+
+# Chargement des données et visualisation
+
+```{r Chargement des données, warning=FALSE}
+
+delinquance = readxl::read_xlsx(path="../Data/Délinquance.xlsx",
+                            sheet="Délinquance")
+
+codification = readxl::read_xlsx(path="../Data/Délinquance.xlsx",
+                            sheet="Codification")
+
+# Visualisation du succès de l'importation
+
+str(delinquance)
+str(codification)
+
+
+```
+
+
+# Préparation des données
+
+```{r Préparation des données, warning=FALSE}
+
+head(delinquance,n=10)
+sample_n(delinquance,15)
+
+codification %>% mutate(Code = factor(Code),
+                        Libellé = factor(Libellé)) -> codification
+str(codification)
+
+
+delinquance %>% mutate(Année = factor(Année),
+                       Code_Département = factor(Code_Département),
+                       Nom_Département = factor(Nom_Département),
+                       Code_Région = factor(Code_Région),
+                       Nom_Région = factor(Nom_Région),
+                       Service = factor(Service),
+                       Périmètre = factor(Périmètre),
+                       Compétence = factor(Compétence),
+                       Infraction = factor(Infraction)) -> delinquance 
+
+str(delinquance)
+
+```
+
+# Analyse exploratoire des données
+
+## Top 5 des infractions constatées par année en France Métropolitaine selon le service 
+
+```{r Top 5 des infractions constatées par année en France Métropolitaine selon le service}
+
+# Sélection des infractions en France métropolitaine
+
+delinquance %>% 
+  filter(Code_Région %in% c(11,24,27,28,32,44,52,53,75,76,84,93,94)) %>%  
+  droplevels() -> france_metropole
+
+
+# Représentation graphique 
+
+france_metropole %>% 
+  mutate(Service = factor(Service, labels = c("Gendarmerie Nationale",
+                                              "Police Nationale"))) %>% 
+  group_by(Année,Service,Infraction) %>% 
+  summarise(Volume_tot=sum(Volume)) %>% 
+  arrange(desc(Volume_tot)) %>% 
+ slice(1:5) %>% 
+  mutate(index = c(1:5)) -> data1
+
+label_infraction = codification$Libellé[codification$Code %in% unique(data1$Infraction)] 
+
+length(data1$Service)
+length(data1$Année)
+
+data1 %>%  ggplot(aes(x=reorder_within(Infraction,
+                        desc(Volume_tot),
+                        within=list(Année,Service)),
+                      y=Volume_tot,fill=Infraction)) + 
+  geom_bar(stat="identity") +
+  facet_wrap(Année~Service, scales = "free_x") +
+  scale_y_continuous(breaks = seq(from = 0,
+                                  to = 300000,
+                                  by = 100000),
+                     labels = c("0K","100K","200K","300K"),
+                     limits = c(0,370000))+
+# Le scales = "free_x" nous permet pour chaque groupe "AnneeXService" 
+# d'avoir le Top 5 seulement et non de rajouter des espaces vides qui 
+# correspond à une autre modalité absente dans un groupe en question
+  labs(title = 
+      "Top 5 des infractions constatées par année en France métropolitaine selon le service",
+       x = "Infraction",
+       y = "Effectif") +
+  scale_fill_discrete(labels=label_infraction) +
+  theme_bw() +
+  geom_text(aes(label = ifelse(index == 1, paste0(round(Volume_tot/1000,2),"K"),
+                    ifelse(index == 5, paste0(round(Volume_tot/1000,2),"K"), ""))),
+            vjust = -0.5,
+            size = 3.3) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.title = element_blank(),
+        legend.direction = "horizontal",
+        legend.position = "top",
+        legend.key.height = unit(0.3,"cm"),
+        legend.key.size = unit(0.3,"cm"),
+# Permet de modifier la taille des carré de la légende avec key.height pour 
+# la hauteur et key.size pour la taille des éléments
+        legend.text = element_text(size = 8.5),
+        plot.title = element_text(hjust = 0.5,face="bold")) 
+
+```
+
+## Evolution des cambriolages « habitation principale vs habitation secondaire » en France Métropolitaine selon le service entre 2012 et 2021
+
+```{r Evolution des cambriolages d\'habitation principale et d\'habitation secondaire, warning=FALSE }
+
+france_metropole %>% 
+  filter(Infraction %in% c(27,28)) %>% 
+  droplevels() %>% 
+  group_by(Année,Service,Infraction) %>% 
+  summarise(Volume_tot=sum(Volume)) %>%
+  mutate(Infraction = factor(Infraction, 
+                             labels = c("Cambriolages de locaux d'habitations principales","Cambriolages de résidences secondaires"))) -> data2
+
+# Représentation graphique
+
+data2 %>% ggplot(aes(x=Année,y=Volume_tot,group=Service, color=Service)) +
+  geom_line(lwd=1) +
+  scale_color_manual(labels = c("Gendarmerie Nationale", "Police Nationale"), 
+                     values = c("red2","blue"))+
+  labs(title = "Évolution des cambriolages « habitation principale vs habitation secondaire » 
+       \nen France Métropolitaine selon le service entre 2012 et 2021",
+       x = "Année",
+       y = "Effectif") +
+  facet_grid(~Infraction) +
+  scale_y_continuous(breaks = seq(from = 0,
+                                  to = 150000,
+                                  by = 50000),
+                     limits = c(0,150000),
+                     labels = c("0K","50K","100K","150K"))+
+  theme_bw() +
+  theme(plot.title = element_text(hjust=0.5,face="bold"),
+        legend.position = "top",
+        legend.title = element_blank(),
+        strip.text = element_text(face = "italic")
+        )
+# Le "strip.text" nous permet d'atteindre les noms au dessus de chaque 
+# graphique qui apparait suite à l'usage "facet_grid". Pour modifier l'écriture 
+# on utilise le "face" dans la fonction "element_text" qui aura pour valeur "italic"
+
+```
+
+
+## Répartition des cambriolages « habitation principale vs habitation secondaire » en Normandie selon le département par type de service, entre 2012 et 2021 
+
+```{r Répartition des cambriolages habitation principale et habitation secondaire en Normandie, warning=FALSE}
+
+# Sélection des infractions en Normandie
+delinquance %>% filter(Code_Région %in% c(28)) %>%  
+                droplevels() -> Normandie
+
+str(Normandie)
+
+# Représentation graphique
+
+Normandie %>%
+  filter(Infraction %in% c(27,28)) %>%
+  droplevels() %>%
+  mutate(Infraction = 
+           factor(Infraction, 
+                  labels = c("Cambriolages de locaux d'habitations principales",
+                             "Cambriolages de résidences secondaires")),
+         Service = factor(Service, labels = c("Gendarmerie Nationale",
+                                              "Police Nationale"))) %>%
+  group_by(Infraction,Nom_Département,Service) %>%
+  summarise(Volume_tot = sum(Volume)) %>%
+  mutate(Percent = round(100*Volume_tot/sum(Volume_tot),2)) -> data3
+
+
+data3 %>% ggplot(aes(x=Nom_Département,y=Percent,fill=Service)) +
+  geom_bar(stat="identity",position = "stack")  +
+  labs(title = 
+  "Répartition des cambriolages « habitation principale vs habitation secondaire » 
+  en Normandie selon le département par type de service, entre 2012 et 2021",
+       x = "Département",
+       y = "Pourcentage") +
+  geom_text(aes(label=paste0(Percent,"%")),
+            position = position_stack(vjust=0.5)) +
+  scale_fill_manual(values = c("Gendarmerie Nationale" = "tomato", 
+                               "Police Nationale" = "lightblue2")) +
+  facet_grid(~Infraction) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust=0.5,face="bold"),
+        legend.position = "top",
+        legend.key.height = unit(0.5,"cm"),
+        legend.key.width = unit(0.5,"cm"),
+        legend.text = element_text(size = 10),
+        strip.text = element_text(face = "italic")
+        )
+
+```
+
+## Répartition des cambriolages « habitation principale et habitation secondaire » par département en Normandie
+
+```{r Répartition des cambriolages (habitation principale et habitation secondaire) par département en Normandie, warning=FALSE}
+
+Normandie %>% 
+  filter(Infraction %in% c(27,28)) %>% 
+  droplevels() %>% 
+  mutate(Infraction = factor(Infraction, 
+                             labels = c("Cambriolages de locaux d'habitations principales","Cambriolages de résidences secondaires"))) %>% 
+  group_by(Nom_Département,Infraction) %>% 
+  summarise(Volume_tot = sum(Volume)) %>% 
+   mutate(Percent = round(100*Volume_tot/sum(Volume_tot),2)) -> data4
+
+data4 %>% ggplot(aes(x=Nom_Département,y=Percent,fill=Infraction)) +
+  geom_bar(stat="identity",position = "stack") +
+  labs(title = 
+        "Répartition en pourcentage des cambriolages « habitation principale et habitation secondaire » \npar département en Normandie",
+       x="Département",
+       y="Pourcentage") +
+  geom_text(aes(label=paste0(Percent,"%")),
+            position = position_stack(vjust=0.5)) +
+  scale_fill_manual(values = 
+                      c("Cambriolages de locaux d'habitations principales" = "pink3",
+                        "Cambriolages de résidences secondaires" = "purple")) +
+  theme_minimal() +
+  theme(legend.position = "top",
+        legend.text = element_text(size = 12),
+        legend.title = element_blank(),
+        plot.title = element_text(face="bold",hjust=0.5))
+
+```
+
+## Top 5 des départements selon le volume des infractions liées aux stupéfiants en fonction du service sur la période 2016-2020
+
+```{r Top 5 des départements selon le volume des infractions liées aux stupéfiants en fonction du service sur la période 2016-2020, warning=FALSE }
+
+delinquance %>% filter(Année %in% c(2016,2017,2018,2019,2020),
+                       Infraction %in% c(55:58)) %>%
+  droplevels() %>% 
+  mutate(Service = factor(Service, labels = c("Gendarmerie Nationale",
+                                              "Police Nationale"))) %>% 
+  group_by(Service,Nom_Département) %>% 
+  summarise(Volume_tot = sum(Volume)) %>% 
+  arrange(desc(Volume_tot)) %>% slice(1:5) -> data5
+
+data5 %>% ggplot(aes(x=reorder_within(Nom_Département,
+                                      desc(Volume_tot),within = Service), 
+                     y = Volume_tot,fill=Service)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~Service,scales = "free_x") +
+  scale_y_continuous(breaks = seq(from = 0,
+                                  to = 64000,
+                                  by = 20000),
+                     limits = c(0,64000),
+                     labels = c("0K","20K","40K","60K"))+
+  scale_x_reordered() +
+  labs(title = 
+         "Top 5 des départements selon le volume des infractions liées aux stupéfiants en fonction \ndu service sur la période 2016-2020", 
+       x="Département",
+       y="Volume") +
+  geom_text(aes(label = paste0(c(round(Volume_tot/1000,1)),"K")),
+            vjust = -0.5) +
+  scale_fill_manual(values = c("Gendarmerie Nationale" = "tomato3", "Police Nationale" = "lightgreen")) +
+  theme_minimal() +
+  theme(legend.position = "top",
+        plot.title = element_text(face="bold",hjust=0.5),
+        legend.text = element_text(size = 12),
+        strip.text = element_blank())
+
+# Le "panel.grid.major.x = element_blank()" nous permet de rétirer les lignes 
+# verticales en arrière plan du graphque. On fait ".y" pour les lignes horizontales. 
+# Si on met rien on retire tout 
+
+```
+
+## Evolution du nombre de « violences à dépositaires autorité » selon le département dans la région Ile-de-France, en fonction du service sur la période 2012-2021 
+
+```{r Evolution du nombre de violences à dépositaires autorité, warning=FALSE}
+
+# Sélection des infractions de la région Ile-de-France
+
+delinquance %>% 
+  filter(Code_Région == 11) %>% 
+  droplevels()  -> ile_france
+
+
+# Réprésentation graphique
+
+ile_france %>% filter(Année %in% c(2012:2021),
+                      Infraction == 73) %>%
+  mutate(Service = factor(Service, 
+                          labels = c("Gendarmerie Nationale",
+                                     "Police Nationale"))) %>%
+  group_by(Service,Nom_Département,Année) %>%
+  summarise(Volume_tot = sum(Volume)) -> data6
+
+data6 %>%
+  ggplot(aes(x=Année,y=Volume_tot, group=Nom_Département)) +
+  geom_line(aes(color=Nom_Département),
+            lwd = 1) +
+  facet_wrap(~Service, scales="free_x")  +
+  theme_minimal()  +
+  labs(title = "Evolution du nombre de « violences à dépositaires autorité » selon le département dans la région Ile-de-France, \nen fonction du service sur la période 2012-2021 ",
+       x="Année",
+       y="Volume") +
+  theme(legend.position = "top",
+        plot.title = element_text(face="bold",hjust=0.5),
+        legend.title = element_blank(),
+        strip.text = element_text(face = "italic"),
+        legend.text = element_text(size = 11))
+
+```
+
+## Comparaison du nombre « d’escroquerie et abus de confiance » par département en Normandie par rapport à la moyenne de la France Métropolitaine en 2020 d'une part et en 2021 d'autre part
+
+```{r Comparaison du nombre escroquerie et abus de confiance par département en Normandie, warning = FALSE}
+
+# Fonction qui renvoie la nombre de l'infraction 18 en moyenne par département dans le jeu de données en paramètre
+
+moyenne_france_f = function(data){
+  data %>% 
+  filter(Infraction == 91) %>% 
+  group_by(Code_Département) %>%
+  summarise(Volume_tot = sum(Volume)) %>% 
+   summarise(Moyenne_F = mean(Volume_tot))
+}
+
+# On passe un dataset respectivement de l'Année 2020 et l'Année 2021 à la fonction moyenne_france_f afin d'obtenir respectivement le nombre de l'infraction 18 en moyenne par département en France métropolitaine pour 2020 et pour 2021
+
+france_metropole %>% nest(data = !Année) %>% 
+  filter(Année %in% c(2020,2021)) %>%  
+  droplevels() %>% 
+  mutate(moy_F = purrr::map2(.x=data,
+                             .y=Année,
+                             .f=~moyenne_france_f(data=.x))) -> moyennes_france_m
+
+# Moyenne année 2020
+moy_annee_2020 = as.numeric(moyennes_france_m$moy_F[[1]][1])
+
+# Moyenne année 2021
+moy_annee_2021 = as.numeric(moyennes_france_m$moy_F[[2]][1])
+
+# Calcul du pourcentage par rapport à la moyenne en France Métropolitaine pour chaque département de Normandie
+
+Normandie %>% filter(Année %in% c(2020,2021),
+                  Infraction == 91) %>%
+  group_by(Année,Nom_Département) %>%
+  summarise(Volume_tot = sum(Volume)) %>%
+  ungroup() %>%
+  mutate(Percent = ifelse(Année == 2020,
+                           round(100*(Volume_tot - moy_annee_2020 ) / moy_annee_2020,2) ,round(100*(Volume_tot - moy_annee_2021) / moy_annee_2021,2))) -> data7
+
+glimpse(data7)
+
+# Représentation graphique
+
+data_test <- data.frame(
+  Année =c(2020, 2021),
+  label = c(paste0("Moyenne = ",round(moy_annee_2020,2)," unités"),paste0("Moyenne = ",round(moy_annee_2021,2)," unités"))
+)
+
+data7 %>%
+  ggplot(aes(x=Nom_Département,y=Percent, fill=factor(sign(Percent)))) +
+  geom_bar(stat = "identity") +
+  facet_grid(~Année) +
+  scale_fill_manual(values = c("red3", "green4")) +
+  theme_bw() +
+    labs(title="Comparaison du nombre « d’escroquerie et abus de confiance » par département \nen Normandie par rapport à la moyenne de la France Métropolitaine en 2020 d'une part et en 2021 d'autre part\n",
+         x='Département',
+         y = 'Pourcentage') +
+  geom_text(aes(label = paste0(Percent,"%"),vjust=ifelse(Percent >= 0, -0.2,1.2))) +
+  geom_text(data = data_test, mapping = aes(x = 2, y = 55, label = label),inherit.aes = FALSE, color="blue") +
+    theme(plot.title = element_text(face = "bold", hjust=0.5),
+          legend.position = "none")
+
+
+```
+
+
+## Cartes choroplètes de l’évolution de l’infraction « Destructions et dégradations de véhicules privés » par département dans la Normandie entre 2015 et 2020, tout service confondu
+
+```{r   Cartes choroplètes de l\'évolution des Destructions et dégradations de véhicules Normandie, warning = FALSE}
+
+
+# Importation des données spatiales des départements de France
+
+dataset_shp = read_sf("../Data/Départements-shp/departements-20180101.shp")
+
+glimpse(dataset_shp)
+
+# Sélection des départements de la Normandie
+
+dataset_shp %>% filter(code_insee %in% unique(Normandie$Code_Département)) -> Normandie_shp
+
+glimpse(Normandie_shp)
+
+
+# Représentation des cartes choroplètes
+
+Normandie %>%
+  filter(Infraction %in% c(68),
+         Année %in% c(2015,2016,2017,2018,2019,2020)) %>%
+  droplevels() %>%
+  group_by(Année,Code_Département) %>%
+  summarise(Volume_tot = sum(Volume)) -> data8
+
+Normandie_shp %>%  left_join(data8, by=c("code_insee"="Code_Département")) %>%
+  ggplot() +
+  geom_sf(aes(fill=Volume_tot)) +
+  geom_sf_label(aes(label=nom),) +
+  scale_fill_gradient(low="green3",high = "red3",
+                      name = "Effectif :") +
+  theme_bw() +
+  facet_wrap(~Année,nrow = 3, ncol = 3) +
+  labs(title = "Cartes choroplètes de l’évolution de l’infraction Destructions et dégradations de véhicules privés par département \ndans la Normandie entre 2015 et 2020",
+       x = NULL,
+       y = NULL) +
+  theme(plot.title = element_text(face="bold",hjust=0.5),
+        legend.position = "top",
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+```
+
+## Répartition en pourcentage des « vols à la roulotte » en Normandie selon les départements sur l’année 2021 
+
+```{r Répartition en pourcentage des vols à la roulotte en Normandie en 2021 selon les départements, warning=FALSE }
+
+# Selectionnons les données relatives au vol à la roulotte en Normandie
+
+Normandie %>% filter(Infraction == 37,
+        Année == 2021) %>%
+  droplevels() %>%
+  mutate(Infraction = factor(Infraction,
+                             labels = c("Vols à la roulotte"))) %>%
+  group_by(Nom_Département) %>% 
+  summarise(Volume_tot = sum(Volume)) %>%
+  mutate(Percent = 100*round(Volume_tot/sum(Volume_tot),2)) -> data9
+
+# Représentation graphique
+
+# La librairie "treemapify" doit être utilisé en conjoncture avec ggplot2 pour la création de treemap 
+
+data9 %>% ggplot(mapping = aes(area = Percent,
+                               fill = Percent,
+                               label = paste0(Percent,"%","\n",Nom_Département))) +
+  geom_treemap()+
+  geom_treemap_text(color = "white",
+                    size = 20)+
+  scale_fill_gradient(low = "lightblue3", 
+                      high = "purple", 
+                      name = "Pourcentage")+
+  labs(title = " Répartition en pourcentage des « vols à la roulotte » en Normandie \nselon les départements sur l’année 2021 ") +
+  theme(legend.position = "top",
+        plot.title = element_text(face="bold",hjust=0.5))
+
+```
+
+## Répartition en pourcentage des infractions 27 à 30 par région en France Métropolitaine sur la période 2017-2022, en fonction du service
+
+```{r Répartition en pourcentage des infractions 27 à 30 sur la période 2017-2022, warning= FALSE }
+
+# Récupérons les labels des infractions 
+label_infraction = codification$Libellé[codification$Code %in% c(27:30)] 
+
+delinquance %>% filter(Infraction %in% c(27:30),
+                       Année %in% c(2017:2022)) %>% 
+  mutate(Service = factor(Service, labels = c("Gendarmerie Nationale", "Police Nationale")),
+         Infraction = factor(Infraction, labels = label_infraction)) %>% 
+  group_by(Service, Nom_Région, Infraction) %>% 
+  summarise(Volume_tot = sum(Volume)) %>% 
+  mutate(Percent = round(100*Volume_tot/sum(Volume_tot),2)) %>% 
+  select(Service, Nom_Région, Infraction, Percent) %>% 
+  pivot_wider(values_from = Percent,
+              names_from = Infraction) %>% 
+  ungroup() -> data10
+
+# Séparons le jeu de données selon le service
+
+  data10 %>% 
+    filter(Service == "Police Nationale") -> data10_1
+  
+  data10 %>% 
+    filter(Service == "Gendarmerie Nationale") -> data10_2
+
+# Représentation graphique
+
+# Pour représenter ce type de graphique, nous allons utiliser la fonction "pheatmap" de cette librairie "pheatmap" 
+  
+# Récupérons le nom des labels
+label_1 = data10_1$Nom_Région
+label_2 = data10_2$Nom_Région
+
+# Graphique 1
+
+
+data10_1 %>% select(-c(Service, Nom_Région)) %>% 
+pheatmap::pheatmap(display_numbers = TRUE,  # pour afficher les valeurs
+                   fontsize = 10,           # pour diminuer la police des valeurs
+                   cluster_cols = FALSE,    # pour ne pas faire de réarrangement de colonnes
+                   cluster_rows = FALSE,
+                   number_format = '%.1f',  # Le format s'adapte 
+                   labels_row = label_1,    # Modifie le nom des colonnes
+                   angle_col = 0,           # Pivoter le nom des modalité sur l'axe des X
+                   fontsize_row = 8,
+                   fontsize_number = 10.5,
+                   fontsize_col = 7.5,
+                   legend_breaks = seq(from = 0, to = 60, by = 10),
+                   legend_labels = c(paste0(seq(from = 0, 
+                                                to = 60, 
+                                                by = 10),"%")),
+                   main = "Répartition en pourcentage des infractions 27 à 30 par région en France Métropolitaine sur la période 2017-2022 selon le service \n Pour la Police Nationale") -> graph1
+
+
+# Graphique 2
+
+data10_2 %>% select(-c(Service, Nom_Région)) %>% 
+pheatmap::pheatmap(display_numbers = TRUE,         
+                   fontsize = 10,               
+                   cluster_cols = FALSE,            
+                   cluster_rows = FALSE,
+                   number_format = '%.1f',
+                   labels_row = label_2,
+                   angle_col = 0,
+                   fontsize_row = 8,
+                   fontsize_number = 10.5,
+                   fontsize_col = 7.5,
+                   main = "\n Pour la Gendarmerie Nationale",
+                   legend=FALSE) -> graph2
+
+# -----------------------------------------------------------------------------------------
+
+# Afin de mettre les graphiques, sur le même sortie, on va utiliser la 
+# fonction "grid.arrange" du package gridExtra
+
+gridExtra::grid.arrange(graph1$gtable,graph2$gtable, ncol = 1)
+
+
+```
+
+
+## Cartes choroplètes de l’évolution de l’infraction « Destructions et dégradations de véhicules privés » en Ile-de-France par département, entre 2015 et 2020, tout service confondu 
+
+```{r  Cartes choroplètes évolution des Destructions et dégradations de véhicules privés Ile-de-France, warning = FALSE}
+
+# Importation des données spatiales des départements de France
+
+
+# Sélection des départements de l'ile de de france
+
+dataset_shp %>% filter(code_insee %in% unique(ile_france$Code_Département)) -> ile_france_shp
+
+glimpse(ile_france_shp)
+
+
+# Représentation des cartes choroplètes
+
+ile_france %>%
+  filter(Infraction %in% c(68),
+         Année %in% c(2015,2016,2017,2018,2019,2020)) %>%
+  droplevels() %>%
+  group_by(Année,Code_Département) %>%
+  summarise(Volume_tot = sum(Volume)) -> data8
+print(data8,n=48)
+ile_france_shp %>%  left_join(data8, by=c("code_insee"="Code_Département")) %>%
+  ggplot() +
+  geom_sf(aes(fill=Volume_tot)) +
+  geom_sf_text(aes(label = nom), vjust = -0.5, 
+               check_overlap = TRUE, fontface = "italic", colour = "black",size=2.8) +
+  scale_fill_gradient(low= "yellow",high = "red",
+                      name = "Effectif :") +
+  theme_bw() +
+  facet_wrap(~Année,nrow = 3, ncol = 3) +
+  labs(title = 
+         "Cartes choroplètes de l'Ile-de-France par département sur l’évolution de l’infraction \n« Destructions et dégradations de véhicules privés » entre 2015 et 2020 tout service confondu\n",
+       x = NULL,
+       y = NULL) +
+  theme(plot.title = element_text(face="bold",hjust=0.5),
+        legend.position = "top",
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+```
+
+## Répartition des infractions de type « vols à main armée » par service en Ile-de-France entre 2018 et 2021
+
+```{r Répartition du nombre des infractions de type vols à main armée par service en Ile-de-France, warning = FALSE}
+
+ile_france %>% filter(Infraction %in% c(15:19),
+                      Année %in% c(2018:2021)) %>% 
+  mutate(Service = factor(Service, 
+                          labels = c("Gendarmerie Nationale",
+                                     "Police Nationale"))) %>% 
+  group_by(Année, Infraction, Service) %>% 
+  summarise(Effectif = sum(Volume, na.rm = TRUE)) %>% 
+  mutate(Percent = round((100*Effectif/sum(Effectif)), 2)) -> data13
+
+data13 %>% ggplot(mapping = aes(x = Infraction,
+                       y = Percent,
+                       fill = Service))+
+  geom_bar(stat = "identity", position = "stack") +
+  coord_flip() +
+  facet_wrap(~Année, scales = "free_x") +
+  theme_bw() +
+  scale_fill_manual(values = c("Gendarmerie Nationale" = "lightgreen",
+                               
+                               "Police Nationale" = "tomato")) +
+  labs(title = "Répartition du nombre des infractions de type vols à main armée par service en Ile-de-France entre 2018 et 2021",
+       y = "Pourcentage",
+       x = "Infraction",
+       subtitle = "15 : Vols à main armée contre des établissements financiers | 16 : Vols à main armée contre des éts industriels ou commerciaux | 17 : Vols à main armée contre des entreprises de transports de fonds \n18 : Vols à main armée contre des particuliers à leur domicile | 19 : Autres vols à main armée") +
+  theme(legend.title = element_blank(),
+        legend.direction = "horizontal",
+        legend.position = "top",
+# PErmet de modifier la taille des carré de la légende avec key.height pour la hauteur et key.size pour la taille des éléments
+        legend.key.height = unit(0.3,"cm"),
+        legend.key.size = unit(0.3,"cm"),
+        plot.subtitle = element_text(hjust = 0.5),
+        legend.text = element_text(size = 10),
+        plot.title = element_text(hjust = 0.5,face="bold"),
+        panel.grid.major.y = element_blank())+
+  guides(fill = guide_legend(reverse=TRUE)) +
+  geom_text(aes(label= ifelse(Percent == 0,"",paste0(Percent,"%"))),
+            position = position_stack(vjust=0.5),
+            size = 3)
+
+```
+
+

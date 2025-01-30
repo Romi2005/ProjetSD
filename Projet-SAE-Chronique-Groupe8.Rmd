@@ -1,0 +1,1057 @@
+---
+title: |
+  | Description et prévision de données temporelles \vspace{0.2cm}
+  | Analyse de la série représentant le nombre de nuitées dans l’hôtellerie en Normandie
+author: "Romuald DJAHOUA"
+date: "`r format(Sys.time(),'%d %B %Y')`"
+output:
+  pdf_document:
+    number_section: yes
+    fig_caption: yes
+    toc: yes
+  html_document:
+    toc: yes
+    df_print: paged
+  word_document:
+    toc: yes
+geometry: margin = 1cm
+fontsize: 12pt
+documentclass: article
+editor_options:
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE,
+	fig.width = 11,
+	fig.height = 7,
+	fig.align = "center"
+)
+
+```
+
+\newpage
+
+# Chargement des librairies
+
+```{r chargement des librairies, warning=FALSE}
+library(dplyr) 
+library(ggplot2)
+library(zoo)
+library(ggpubr)
+library(forecast)
+
+```
+
+
+**Objectif.** Analyse exploratoire de la série représentant le nombre de nuitées exprimé en milliers dans l’hôtellerie en Normandie (Source : INSEE, Identifiant : 010598624) sur la période janvier 2011 à septembre 2023, modélisation de la tendance de la chronique et réalisation des prévisions sur l’année 2024.
+
+
+## Phase 1 : Préliminaires
+
+
+```{r dezipper un dossier, include=FALSE, warning=FALSE}
+
+unzip(zipfile = "../Data/serie_010598624_01012024.zip",
+      exdir = "../Data/")
+
+```
+
+## Phase 2 : Importation et préparation des données
+
+### Chargement des données
+
+```{r Chargement des données, echo=FALSE}
+
+# Visualisons le structure des données 
+
+readLines(con = "../Data/valeurs_mensuelles.csv" , 
+          n = 10)
+
+# Nous avons la présence des quotes, les données commencent à la 5ème ligne, le séparateur c'est le ";"
+
+# Importons les données 
+
+dataset = read.table(file = "../Data/valeurs_mensuelles.csv" ,
+                     header = FALSE,
+                     sep = ";",
+                     skip = 4,
+                     quote = "\"")
+
+str(dataset)
+
+```
+
+
+### Transformation des données
+
+```{r Transformation des données, echo=FALSE}
+
+dataset %>% select(V1, V2) %>% 
+  mutate(V1 = paste0(V1, "-01"),
+         V1 = as.Date(V1, format = "%Y-%m-%d")) %>% 
+  rename(Date = V1,
+         Value = V2) -> dataset
+
+# Visualisons le succès de l'opération
+
+str(dataset)
+
+```
+
+Ci-dessous, vous trouverez un extrait des données du jeu de données sur lequel a porté notre étude :
+
+```{r visualisation du succès, echo = FALSE}
+
+# Visualisons le succès de l'opération 
+
+head(dataset, n = 10)
+
+```
+
+### Création de la chronique
+
+```{r Création de la chronique, echo=FALSE}
+
+chronique = zoo::zoo(x = dataset$Value, order.by = dataset$Date)
+
+str(chronique)
+
+```
+
+## Phase 3 : Analyse exploratoire des données
+
+### Visualisation du chronogramme de la série chronologique 
+
+```{r chronogramme de la série, echo=FALSE}
+
+chronique %>% ggplot(mapping = aes(x = index(chronique),
+                                   y = coredata(chronique))) +
+  geom_line(lwd = 1) +
+  scale_x_date(breaks = seq(from = as.Date("2011-01-01", format = "%Y-%m-%d"),
+                                 to = as.Date("2024-01-01", format = "%Y-%m-%d"),
+                                 by = "1 years"),
+               date_labels = format("%b %Y")) +
+  labs(title = "Nuitées en hôtellerie en Normandie",
+       x = "Période Janv. 2011 à Sept. 2023",
+       y = "Nombre de nuitées",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_text(colour = "purple",
+                                    hjust = 0.5,
+                                    size = 10))
+
+```
+
+Lorsqu’on observe cette chronique, nous constatons que la tendance est relativement stable de 2011 à 2018 où nous observons une chute du nombre de nuitées en hôtellerie jusqu’en fin 2020. La baisse de ce nombre traduit une tendance décroissante. Ensuite, après cette baisse importante qui peut s’expliqué par le confinement en raison de la pandémie de la COVID-19, nous observons que la tendance est désormais croissante ce qui traduit une reprise de l’activité et donc une augmentation à nouveau du nombre de nuitées. Pour résumé nous avons 3 phases d’évolution :
+* Une période de stagnation : 2011 - 2018
+* Une période de décroissance : 2019 - 2020
+* Une période de croissance : 2021 - 2023
+
+
+Pour ce qui est de la saisonnalité, nous pouvons bel et bien dire qu’il en existe une du fait que nous ayons le même motif qui se répète chaque année. La saisonnalité est de périodicité d’ordre 12.
+
+
+Lorsqu’on observe la chronique, nous constatons que la variabilité des données est globalement la même sur toute la période d’étude. En effet, en es enveloppes convexes supérieures et inférieure, nous constatons qu’elle sont approximativement parallèles en faisant abstraction du point atypique dû à la COVID-19. A suite de cette analyse, nous allons nous tourner vers un **schéma de composition additif** qui caractérise une indépendance entre la composante tendancielle et la composante saisonnière. Ce schéma admet l’expresion suivante :
+
+$$
+Y_t = m_t + s_t + \epsilon_t
+$$
+
+### Visualisation du chronogramme de la série chronologique et sa composante tendancielle
+
+```{r chronogramme de la série et la tendance, echo=FALSE}
+
+chronique %>% ggplot(mapping = aes(x = index(chronique),
+                                   y = coredata(chronique))) +
+  geom_line(lwd = 1) +
+  geom_smooth(method = "loess",
+              span = 0.3,
+              color = "blue",
+              se = FALSE,
+              lwd = 1)+
+  scale_x_date(breaks = seq(from = as.Date("2011-01-01", format = "%Y-%m-%d"),
+                            to = as.Date("2024-01-01", format = "%Y-%m-%d"),
+                            by = "1 years"),
+               date_labels = format("%b %Y")) +
+  labs(title = "Nuitées en hôtellerie en Normandie",
+       x = "Période Janv. 2011 à Sept. 2023",
+       y = "Nombre de nuitées",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_text(colour = "purple",
+                                     hjust = 0.5,
+                                     size = 10))
+
+```
+
+Cette tendance lissée est obtenue par méthode de lissage dont la taille de la fenêtre de lissage a été fixée à 0.3. La tendance lissée vient confirmer notre analyse précédente car illustre à merveille les 3 phases d’évolutions du nombre de nuitées en hôtellerie. Au vu de ces variations, on peut dire que la tendance n’est pas linéaire du fait qu’elle ne peut pas être modélisée par un polynôme de degré 1 et du fait que la courbe est très proche d’une ligne brisée continue.
+
+
+### Représentation des variations saisonnières 
+
+```{r variations saisonnières, echo=FALSE}
+
+# Créons notre nouveau dataframe sans la composante tendancielle
+
+time = as.numeric(index(chronique))
+
+smooth = loess(formula = coredata(chronique) ~ time,
+               data = chronique,
+              span = 0.3,
+              degree = 1)
+
+
+# Déterminons la tendance du nombre de nuitées en hôtellerie en Normandie grâce à la fonction predict
+
+adjusted = zoo::zoo(predict(smooth),
+                     order.by = index(chronique))
+
+varseason = chronique - adjusted
+
+# Vérifions le succès de l'opération
+
+# head(varseason, n = 12)
+
+# str(varseason)
+
+# Réprésentation graphique
+
+varseason %>% ggplot(mapping = aes(x = index(varseason),
+                                   y = coredata(varseason)))+
+  geom_line(lwd = 1)+
+  geom_smooth(method = "loess",
+              span = 0.8,
+              se = FALSE,
+              color = "blue",
+              lwd = 1) +
+  scale_x_date(breaks = "1 years",
+               date_labels = format("%b %Y"))+
+  scale_y_continuous(limits = c(-500,500),
+                     breaks = seq(from = -400,
+                                  to = 400,
+                                  by = 200))+
+  labs(title = "Variation saisonnière",
+       x = "Période Janv. 2011 à Sept. 2023",
+       y = "Nombre de nuitées",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_text(colour = "purple",
+                                     hjust = 0.5,
+                                     size = 10))
+
+
+```
+
+Ce graphique (cf. Fig. 4) illustre uniquement la composante saisonnière du fait que nous avons retiré la composante tendancielle. En effet, nous avons pris les données brutes de la chronique auxquelles nous avons retiré la tendance. Ainsi, cela explique pourquoi la courbe de la tendance lissée est horizontale. L’expression suivante nous a permis obtenir les variations saisonnières qui sont représentées dans le chronogramme ci-dessus.
+
+$$
+s_t = y_t + \hat{m}_t
+$$
+
+### Graphique des distributions mensuelles 
+
+```{r distributions mensuelles sous la forme de boxplots, echo=FALSE}
+
+# Calculons les différentes moyennes grâce à la fonction aggregate du package zoo
+
+MeanByMonth = stats::aggregate(varseason ~ format(index(varseason), "%m"),
+                        FUN = mean)
+
+names(MeanByMonth) = c("Mois", "Mean")
+
+
+# Créons notre vecteur de mois 
+
+Mois = format(seq(from = as.Date("2011-01-01", format = "%Y-%m-%d"),
+           to = as.Date("2011-12-31", format = "%Y-%m-%d"),
+           by = "1 months"),"%b")
+
+
+# Représentation graphique 
+
+varseason %>% ggplot(mapping = aes(y = coredata(varseason),
+                                   x = format(index(varseason),"%m")))+
+  geom_hline(yintercept = 0,
+             lty = 2,
+             lwd = 1,
+             color = "gray")+
+  geom_boxplot(fill = "lightblue")+
+  scale_y_continuous(limits = c(-500,600))+
+  geom_point(MeanByMonth,
+             mapping = aes(x = Mois,
+                           y = Mean),
+             color = "red",
+             size = 2,
+             pch = 18) +
+  geom_line(MeanByMonth,
+            mapping = aes(x = Mois,
+                          y = Mean),
+            color = "purple",
+            lwd = 0.7,
+            group = 1)+
+  scale_x_discrete(labels = Mois)+
+  labs(title = "Distributions mensuelles des nuitées en Normandie",
+       x = "Période Janv. 2011 à Sept. 2023",
+       y = "Nuiitées en milliers",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_text(colour = "purple",
+                                     hjust = 0.5,
+                                     size = 10))
+
+
+```
+
+En observant ce graphique, on constate une variabilité assez forte des variations saisonnières pour les mois d'avril, de juin puis d'Août. Au vu de la position des boxplots, nous pouvons prétendre que les mois favorables aux nuitées en Normandie sont les mois de mai à septembre. Les mois d'avril et d'octobre sont aussi favorable que défavorable. Cependant les mois de janvier à mars puis novembre et décembre sont défavorables aux nuitées dans l'hôtellerie en Normandie. Aussi, on note la présence de nombreux points atypiques dont 2 valeurs faibles pour le mois d'avril et 1 valeur faible pour le mois mai. Il s'agit des variations saisonnières les plus significatives.
+
+
+## Phase 4 : Modélisation
+
+### Proposition de deux dates judicieuses pour les deux ruptures
+
+```{r dates de ruptures, echo=FALSE, warning=FALSE}
+
+# Réaffichons d'abord la tendance lissée
+
+chronique %>% ggplot(mapping = aes(x = index(chronique),
+                                   y = coredata(chronique))) +
+  geom_line(lwd = 1) +
+  geom_smooth(method = "loess",
+              span = 0.3,
+              color = "blue",
+              se = FALSE,
+              lwd = 1)+
+  scale_x_date(breaks = seq(from = as.Date("2011-01-01", format = "%Y-%m-%d"),
+                            to = as.Date("2024-01-01", format = "%Y-%m-%d"),
+                            by = "1 years"),
+               date_labels = format("%b %Y")) +
+  labs(title = "Nuitées en hôtellerie en Normandie",
+       x = "Période Janv. 2011 à Sept. 2023",
+       y = "Nombre de nuitées",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_text(colour = "purple",
+                                     hjust = 0.5,
+                                     size = 10))
+
+```
+
+En visualisant la tendance lissée, plus haut nous avons repéré trois phases d’évolutions, c’est-à-dire deux ruptures. Ainsi, nous pouvons proposer pour ces deux ruptures les deux dates suivantes qui nous
+semblent judicieuses : **01/01/2019** et le **01/01/2021**.
+
+
+### Ecriture explicite du modèle de régression linéaire par morceaux
+
+L’expression générale est : 
+
+$$
+m(t) = \beta_0 + \beta_1 t + \beta_2 (t - t_1) \mathbb{I}(t > t_1) + \beta_3 (t - t_2) \mathbb{I}(t > t_2)
+$$
+Ce qui nous donne le modèle de régression linéaire par morceaux suivant : 
+
+$$
+\begin{cases}
+    \beta_0 + \beta_1 t &\forall t < t_1 \\
+    \beta_0 - \beta_2 t_2 + (\beta_1 + \beta_2 ) t &\forall t_1 < t < t_2 \\
+    \beta_0 - \beta_2 t_2 - \beta_3 t_3 + (\beta_1 + \beta_2 + \beta_3)t &\forall  t > t_2
+\end{cases}
+$$
+
+### Construisons le modèle de régression linéaire par morceaux
+
+```{r modele de régression linéaire par morceau, echo=FALSE}
+
+# Créons notre modèle de régression linéaire par morceaux
+
+time1 = as.Date("2019-01-01", format = "%Y-%m-%d")
+time2 = as.Date("2021-01-01", format = "%Y-%m-%d")
+
+date = index(chronique)
+
+Ind1 = date > time1 ; date1 = (date - time1)*Ind1
+Ind2 = date > time2 ; date2 = (date - time2)*Ind2
+
+# print(date1) ; print(date2)
+
+# Le fait qu'on fasse t-t1 ou t-t2 nous permet de prendre les points de rupture de la chronique comme origine des temps pour chaque période
+
+model = lm(coredata(adjusted) ~ date+date1+date2)
+
+# Affichons les caractéristiques du modèle 
+
+print("========== Les caractériques du modèle =============")
+summary(model)
+
+```
+
+Avec avoir fait usage du critère des moindres carrées pour estimer les paramètres du modèle, nous avons obtenu les 3 équations suivante :
+
+$$
+\begin{cases}
+    425.1 + 0.013 t &\forall t < t_1 \\
+    5932.007 - 0.295 t &\forall t_1 < t < t_2 \\
+    -6481.692 + 0.3718 t &\forall  t > t_2
+\end{cases}
+$$
+
+Ainsi, nous pouvons dire que sur la période janvier 2011 à janvier 2019, nous observons une augmentation mensuelle moyenne de 13 nuitées dans l’hôtellerie en Normandie. Cependant, sur la période février 2019 à janvier 2021, nous observons une diminution mensuelle moyenne de 295 nuitées dans l’hôtellerie qui s’explique pleinement par la pandémie de la COVID-19 qui fut un évènement très inattendu. Mais durant la période post COVID c’est à dire sur la période de février 2021 à septembre 2023, nous observons une augmentation mensuelle moyenne de 371,8 nuitées dans l’hôtellerie en Normandie. Aussi, avec un coefficient de détermination de 98,41%, nous pouvons dire que le modèle de régression linéaire par morceau explique 98,41% de la part de variabilité de la courbe de la tendance lissée.
+
+
+### Vérification de l’adéquation du modèle de régression linéaire par morceaux avec la courbe lissée
+
+```{r adéquation, echo=FALSE}
+
+adjusted_model = zoo::zoo(x = predict(model),
+                          order.by = index(chronique))
+
+chronique %>% ggplot(mapping = aes(x = index(chronique),
+                                   y = coredata(chronique))) +
+  geom_smooth(method = "loess",
+              span = 0.3,
+              lwd = 1,
+              color = "red",
+              se = FALSE) +
+  geom_line(adjusted_model,
+            mapping = aes(x = index(adjusted_model),
+                          y = coredata(adjusted_model)),
+            lwd = 1,
+            color = "blue")+
+  labs(title = "Contrôle de l'adéquation du modèle de régression linéaire avec la tendance lissée",
+       x = "Période Janv. 2011 à Sept. 2023",
+       y = "Nuitées en milliers",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+  scale_x_date(breaks = seq(from = as.Date("2011-01-01", format = "%Y-%m-%d"),
+                            to = as.Date("2024-01-01", format = "%Y-%m-%d"),
+                            by = "1 years"),
+               date_labels = format("%b %Y"))+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5,
+                                     color = "purple",
+                                     size = 10))
+
+```
+
+
+```{r valeurs ajustées modèle versus les valeurs ajustées tendance, echo=FALSE}
+
+data1 = data.frame(X = coredata(adjusted),
+                  Y = coredata(adjusted_model))
+
+# head(data1, n = 10)
+
+data1 %>% ggplot(mapping = aes(x = X,
+                              y = Y)) +
+  geom_jitter(height = 10,
+              pch = 21,
+              fill = "lightblue3",
+              color = "black")+
+  geom_abline(slope = 1,
+              intercept = 0,
+              color = "red",
+              lwd = 1)+
+  labs(title = "Contrôle de l'adéquation du modèle de régression linéaire avec la tendance lissée",
+       x = "Valeurs ajustées par la tendance lissée",
+       y = "Valeurs ajustées par le modèle de régression linéaire",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5,
+                                     color = "purple",
+                                     size = 10))
+
+```
+
+
+Au vu de ce graphique et avec un coefficient de détermination d'environ 98%, nous pouvons dire que la qualité d'ajustement de notre modèle aux valeurs proposées par la tendance lissée semble très bonne. En effet, nous constatons que les points sont globalement distribués le long de la première bissectrice.
+
+
+### Proposons une écrire explicite du modèle de régression linéaire que l’on doit utiliser pour estimer les coefficients saisonniers 
+
+Afin d’estimer les coefficients saisonniers, nous allons faire du modèle de régression linéaire suivant :
+
+$$
+s_t = \sum_{j=1}^{p} \alpha_j \delta_j(t)
+$$
+
+
+### Création du modèle de régression linéaire pour estimer les coefficients saisonniers provisoires
+
+```{r modèle de régression linéaire pour estimer les coefficients saisonniers, echo=FALSE}
+
+Mois = format(index(chronique),"%m")
+
+model_varseason = lm(coredata(varseason) ~ Mois-1,
+                     data = varseason)
+
+# Affichons les caractéristiques du modèle 
+
+print("Caractéristiques du modèle ")
+summary(model_varseason)
+
+```
+
+Grâce à ce modèle, nous obtenons les estimations des coefficients saisonniers provisoires que nous pouvons retrouver dans la colonne Estimate de la sortie ci-dessous. Aussi, on peut retrouver la part de variabilité des variations saisonnières expliquées par le modèle de régression linéaire dans la sortie ci-dessous sous la mention Multiple R-square. Dans notre cas, elle est de 83,78%.
+
+### Déduction des coefficients saisonniers définitifs
+
+Pour passer des coefficients saisonniers provisoires aux coefficients saisonniers définitifs, nous allons appliquer l’expression ci-dessous afin de s’assurer que ces coefficients vérifient les deux contraintes que doivent vérifier les coefficients saisonniers définitifs qui sont : 
+* la stabilité de la saisonnalité au cours du temps 
+* la conservation des aires
+
+$$
+\hat{s}_t = \widetilde{s}_t  - \sum_{t=1}^{p} \widetilde{s}_t
+$$
+
+```{r coefficients saisonniers définitifs, echo=FALSE}
+
+# Affichons uniquement les coefficients saisonniers provisoires et leur moyenne
+coef(model_varseason) ; mean(coef(model_varseason))
+
+# Réalisons le calcul
+varseason_coef_Def = coef(model_varseason) - mean(coef(model_varseason))
+varseason_coef_Def = data.frame(value = varseason_coef_Def, 
+                                mois = c(1:12),
+                                row.names = NULL)
+
+print("Affichage des coefficients")
+varseason_coef_Def
+
+```
+
+### Représentation des coefficients saisonniers définitifs 
+
+```{r coefficients saisonniers définitifs , echo=FALSE}
+
+ggplot(varseason_coef_Def,
+       mapping = aes(x = mois,
+                     y = value))+
+  geom_hline(yintercept = 0,
+             lwd = 0.8,
+             color = "gray")+
+  geom_line(color = "blue",
+            lwd = 1)+
+  geom_point(pch = 21,
+             color = "black",
+             fill = "yellow",
+             size = 3)+
+  scale_x_continuous(limits = c(1,12),
+                     breaks = seq(from = 01,
+                                  to = 12,
+                                  by = 1),
+                     labels = unique(format(index(varseason), "%b")))+
+  labs(title = "Visualisation des coefficients saisonniers définitifs",
+       y = "Nombre de nuitées (en milliers)",
+       x = "Mois",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"), 
+        plot.subtitle = element_text(hjust = 0.5,
+                                     color = "purple",
+                                     size = 10),
+        panel.grid.minor.x = element_blank()) +
+  geom_text(mapping = aes(label = round(value)),
+            hjust = 1.5)
+
+```
+
+
+Ce graphique confirme notre première analyse et rajoute plus de précision concernant l’activité des hôtels en Normandie. Ainsi, nous pouvons bel et bien dire que les mois de mai à octobre présentent une forte activité concernant le nombre de nuitées dans l’hôtellerie en Normandie. Cependant, pour les mois de janvier à avril puis novembre et décembre, nous constatons une faible activité concernant le nombre de nuitées dans l’hôtellerie en Normandie. Il ressort que le mois le favorable est le mois d’août et le mois le plus défavorable est le mois de janvier. Alors, pour le mois d’août on s’entend à 375 000 nuitées de plus par rapport à la tendance tandis que pour le mois de janvier, on s’attend à 270 000 nuitées de moins par rapport à la tendance.
+
+### Visualisation de l’adéquation entre les coefficients saisonniers définitifs et les variations saisonnières
+
+**Création du jeu de données.** Etant donné que notre série va de janv. 2011 à sept. 2023, nous allons répéter les coefficients 12 fois qui vont correspondre aux 12 mois des 12 premières années (2011 - 2022). Puis à ces coefficients, nous rajoutons les 9 premiers ce qui correspond aux mois de janv. à sept. 2023. Le vecteur sera donc :
+
+```{r vecteur, echo=FALSE}
+
+print(c(rep(varseason_coef_Def$value,12),varseason_coef_Def$value[1:9])
+)
+
+```
+
+
+```{r représentation, echo=FALSE}
+
+varseason_coef = zoo::zoo(c(rep(varseason_coef_Def$value,12),varseason_coef_Def$value[1:9]), 
+                   order.by = index(varseason))
+
+
+# Représentation graphique 
+
+varseason %>% ggplot(mapping = aes(x = coredata(varseason_coef),
+                              y = coredata(varseason))) +
+  geom_point(pch = 21,
+             fill = "lightblue3",
+             color = "black",
+             size = 2)+
+  geom_abline(slope = 1,
+              intercept = 0,
+              color = "red",
+              lwd = 1)+
+  geom_text(mapping = aes(label = ifelse(coredata(varseason_coef) > -150 & coredata(varseason) < -260,
+                                         format(index(varseason),"%b %Y"),
+                                         "")),
+            vjust = -0.5)+
+  labs(title = "Visualisation de l’adéquation entre les coefficients saisonniers définitifs et les variations saisonnières",
+       y = "Variations saisonnières",
+       x = "Coefficients saisonniers définitifs",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5,
+                                     color = "purple",
+                                     size = 10))
+
+```
+
+En observant ce graphique, nous pouvons dire que notre modèle est de bonne qualité. En effet le coefficient de détermination de 83,78% vient renforcer notre conclusion. Toutefois, nous notons la présence de quelques points atypiques qui sont notamment le nombre de nuitées en Normandie enregistré en avril 2020, en mai 2020 puis en avril 2021.
+
+### Visualisation de l’adéquation entre la série brute et la série ajustée
+
+Il faut savoir que la serie ajustée est égale à l'estimation de la tendance plus le coefficient saisonnier définitif en un instant t. L'expression est la suivante : 
+
+$$
+\hat{y}_t =\hat{m}_t + \hat{s}_t
+$$
+
+```{r adéquation entre la série brute et la série ajustée, echo=FALSE}
+
+# Créons donc la série ajustée
+
+chronique_adjusted = adjusted_model + varseason_coef
+
+
+# Créons le modèle associé au nuage de point ci-dessous 
+
+model_B_A = lm(chronique ~ chronique_adjusted)
+
+# Les coefficients du modèle sont 
+print("Les coefficients du modèle sont  : ")
+print(coef(model_B_A))
+
+# Les caractéristiques du modèle sont 
+print("Les caractéristiques du modèle sont : " )
+print(summary(model_B_A))
+
+# Représentation graphique 
+
+  chronique %>% ggplot(mapping = aes(x = coredata(chronique_adjusted),
+                                     y = coredata(chronique))) +
+    geom_point(pch = 21,
+               fill = "lightblue3",
+               color = "black",
+               size = 2)+
+    geom_abline(slope = 1,
+                intercept = 0,
+                color = "red",
+                lwd = 1) +
+    geom_text(mapping = aes(label = ifelse(coredata(chronique_adjusted) > 400 & coredata(chronique) < 200,
+                                           format(index(varseason),"%b %Y"),
+                                           "")),
+              vjust = -0.5)+
+    labs(title = "Nuitées en hôtellerie en Normandie : \nVisualisons de l’adéquation entre la série brute et la série ajustée",
+         x = "Valeurs ajustées",
+         y = "Valeurs brutes",
+         subtitle = "Source : INSEE (Identifiant 010598624)")+
+    theme_minimal()+
+    geom_text(x = 300,
+              y = 1100,
+              label = paste0("y = ",round(coef(model_B_A)[1], 2), " + ",round(coef(model_B_A)[2], 2),"x, R² = ",
+                             round(summary(model_B_A)$r.squared,2)),
+              fontface = "italic")+
+    theme(plot.title = element_text(hjust = 0.5,
+                                    face = "bold"),
+          plot.subtitle = element_text(colour = "purple",
+                                       hjust = 0.5,
+                                       size = 10))
+
+```
+
+Nous constatons que les points sont globalement distribués le long de la première bissectrice ce qui témoigne d'un bon ajustement. Aussi, nous pouvons noter la présence de 3 points atypiques que nous nous attendions de voir compte tenu de notre observation précédente. Afin de viens appréhender la qualité de notre ajustement c'est à dire l'adéquation entre la série brute et la série ajustée, nous proposons le graphique ci-après.
+
+  
+```{r adéquation entre la série brute et la série ajustée version 2, echo=FALSE}
+
+chronique %>% ggplot(mapping = aes(x = index(chronique),
+                                     y = coredata(chronique))) +
+    geom_line(lwd = 1,
+              color = "blue") +
+    geom_line(chronique_adjusted,
+              mapping = aes(x = index(chronique_adjusted),
+                            y = coredata(chronique_adjusted)),
+              color = "red",
+              lwd = 1,
+              lty = 2)+
+    scale_x_date(breaks = seq(from = as.Date("2011-01-01", format = "%Y-%m-%d"),
+                              to = as.Date("2024-01-01", format = "%Y-%m-%d"),
+                              by = "1 years"),
+                 date_labels = format("%b %Y"))+
+  labs(title = "Nuitées en hôtellerie en Normandie : \nVisualisons de l’adéquation entre la série brute et la série ajustée",
+       x = "Période Janv. 2011 à Sept. 2023",
+       y = "Nombre de nuitées",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+    theme_minimal()+
+    theme(plot.title = element_text(hjust = 0.5,
+                                    face = "bold"),
+          plot.subtitle = element_text(colour = "purple",
+                                       hjust = 0.5,
+                                       size = 10))
+
+```
+
+Lorsqu’on représente dans le même repère caractérisien le chronogramme de la série des données brutes et celui de la série des valeurs ajustées, nous constatons qu’ils sont globalement très proches voire même se superposent. Cette représentation, nous permet de dire que notre modèle est acceptable même si toutefois nous observons un fort décalage sur le période 2019 à 2021 qui s’explique pleinement par la COVID-19 qui fut un évènement imprévisible.
+
+## Phase 5 : Analyse des résidus
+
+### Déterminons la série des résidus puis la série des résidus standardisés.
+
+#### Série des résidus
+
+
+Il faut noter que la série des résidus rend compte de l’écart entre la série initiale et la série ajustée. Voici ci-dessous un extrait de cette série : 
+
+```{r serie des résidus, warning=FALSE, echo = FALSE}
+
+serie_residus = chronique - chronique_adjusted
+
+print("Extrait de la série des résidus")
+head(serie_residus,n=12)
+
+```
+
+#### Série des résidus standardisés
+
+
+On préféra les résidus standardisés aux résidus brutes car ces derniers sont dépendants des unités et difficiles à interpréter. L’intérêt aussi est qu’il plus facile de détecter les points mal représentés par le modèle via les résidus standardisés.
+La série des résidus standardisés s’obtient en divisant la série des résidus brutes par l’écart-type de cette
+dernière. Voici ci-dessous un extrait de cette série.
+
+```{r série des résidus standardisés, warning=FALSE, echo = FALSE}
+
+serie_residus_standa = serie_residus / sd(serie_residus)
+str(serie_residus_standa)
+
+head(serie_residus_standa,n=12)
+
+```
+
+Créons un dataframe qui contiendrait toutes nos résultats précédentes. 
+
+```{r dataframe des résultats, warning=FALSE,echo = FALSE}
+
+df = data.frame(date = index(chronique), 
+               value = coredata(chronique), 
+               loess = adjusted, 
+               varseason = coredata(varseason),
+               month = format(as.Date(index(chronique),format="%Y-%m-%d"),"%b"),
+               date1 = date1,
+               date2 = date2,
+               model1 = adjusted_model,
+               coef = varseason_coef,
+               adjusted = chronique_adjusted,
+               residual = serie_residus,
+               standardized.residual = serie_residus_standa
+               )
+
+```
+
+### Visualisation des résidus standardisés
+
+```{r Visualisons la série des résidus standardisés, warning=FALSE,echo = FALSE}
+
+serie_residus_standa %>% ggplot(aes(x=index(serie_residus_standa),
+                                    y = coredata(serie_residus_standa))) +
+  geom_hline(yintercept = c(-2,2), lty = 2) +
+  geom_line(color = "black",lwd=0.5) +
+  geom_hline(yintercept = 0,color = "red")+
+    scale_x_date(breaks = seq(from = as.Date("2011-01-01", format = "%Y-%m-%d"),
+                              to = as.Date("2024-01-01", format = "%Y-%m-%d"),
+                              by = "1 years"),
+                 date_labels = format("%b %Y"))+
+  labs(title="Visualisation des résidus standardisés",x="Janvier 2011 à Septembre 2023",y="Résidus standardisés",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+    theme_minimal()+
+    theme(plot.title = element_text(hjust = 0.5,
+                                    face = "bold"),
+          plot.subtitle = element_text(colour = "purple",
+                                       hjust = 0.5,
+                                       size = 10))
+
+```
+
+Sous l’hypothèse d’un bruit blanc gaussien, on devrait trouver 95% des résidus standardisés au sein de la bande formée par les deux droites en pointillé. On peut visualiser à travers ce graphique, qu’il a une forte présence des résidus standardisés dans cette bande. On observe aussi la présence de deux points atypiques : **Août 2020** et **Août 2021**. Ceci pourrait peut-être s’expliquer par la pandémie du covid-19.
+
+### Visualisation de la distribution des résidus standardisés
+
+```{r Visualiser la densité lissée des résidus standardisés,warning=FALSE,echo = FALSE}
+
+serie_residus_standa %>% ggplot(aes(x=coredata(serie_residus_standa))) +
+  geom_density(color = "black",lwd=0.5, fill="lightblue", alpha=0.6) +
+  labs(title="Visualisation de la distribution des résidus standardisés",x="Résidus standardisés",y="Densité",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+    theme_minimal()+
+    theme(plot.title = element_text(hjust = 0.5,
+                                    face = "bold"),
+          plot.subtitle = element_text(colour = "purple",
+                                       hjust = 0.5,
+                                       size = 10))
+```
+
+On note la présence de données atypiques qui influencent la courbe lissée. Afin de mieux appréhender la distribution de la série des résidus standardisés nous allons faire abstraction des données atypiques.
+
+### Visualisation de la distribution des résidus standardisés sans les données atypiques
+
+```{r résidus standardisés sans données atypiques, warning=FALSE,echo = FALSE}
+
+serie_residus_standa_2 = serie_residus_standa[coredata(serie_residus_standa) >= -2.2 & coredata(serie_residus_standa) <= 2.1] 
+
+serie_residus_standa_2 %>% 
+  ggplot(aes(x=coredata(serie_residus_standa_2))) +
+  geom_density(color = "black",lwd=0.5, fill="lightblue", alpha=0.6) +
+  labs(title="Visualisation de la distribution des résidus standardisés",x="Résidus standardisés",y="Densité",
+       subtitle = "(Note :  valeurs atypiques supprimées)")+
+    theme_minimal()+
+    theme(plot.title = element_text(hjust = 0.5,
+                                    face = "bold"),
+          plot.subtitle = element_text(colour = "purple",
+                                       hjust = 0.5,
+                                       size = 10))
+```
+
+La courbe de la densité lissée des résidus standardisés lorsqu’on supprime les données atypiques est unimodale, symétrique et approximativement centrée en 0. On peut remarquer qu’elle est très proche de la distribution d’une distribution gaussienne. Ainsi, nous pouvons accepter l’hypothèse d’une distribution gaussienne des résidus standardisés.
+
+### Quantile-Quantile Plot concernant les résidus standardisés 
+
+```{r Série des résidus standardisés sans les données atypiques,,echo = FALSE}
+
+ggqqplot(as.numeric(serie_residus_standa_2),
+                                    pch = 20, col = "red",
+         color = "black",
+         xlab="Quantiles théoriques",ylab="Quantiles empiriques")+
+  labs(title="Quantile-Quantile Plot concernant la composante résiduelle",
+       subtitle = "(Note : valeurs atypiques supprimées)",
+       caption = "BUT Science des données")+
+  theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5,
+                                    face = "bold"),
+          plot.subtitle = element_text(colour = "purple",
+                                       hjust = 0.5,
+                                       size = 10),
+          plot.caption = element_text(face="bold",hjust = 0))
+
+```
+
+Via ce graphique on peut remarquer qu’à part quelques uns, les points sont globalement à l’intérieur
+de la zone de confiance et sont distribués le long d’une droite. Il n’y a alors pas de raison de remettre en
+question l’hypothèse d’une distribution gaussienne des résidus standardisés.
+
+
+### Corrélogramme pour visualiser la corrélation entre des observations successives
+
+```{r corrélogramme, warning=FALSE,include = FALSE}
+
+acf_resultat = acf(coredata(serie_residus_standa_2),
+               lag.max = 12,
+               type = "correlation")
+
+acf_frame = data.frame(Lag = acf_resultat$lag, Correlation = acf_resultat$acf)
+
+# Retirer la corrélarion entre l'instant t et l'intant t lui même
+acf_frame %>%  filter(Lag != 0) -> acf_frame
+
+```
+
+
+```{r représentation corrélogramme, warning=FALSE,echo = FALSE}
+
+# Créons notre vecteur de mois 
+
+Mois = format(seq(from = as.Date("2011-01-01", format = "%Y-%m-%d"),
+           to = as.Date("2011-12-31", format = "%Y-%m-%d"),
+           by = "1 months"),"%b")
+
+acf_frame %>% ggplot(aes(x = factor(Lag, labels=Mois), y = Correlation)) +
+  geom_hline(yintercept = 0.2, lwd = 0.7, lty = 2, color = "blue")+
+  geom_hline(yintercept = -0.2, lwd = 0.7, lty = 2, color = "blue") +
+  geom_bar(stat="identity", 
+           fill = ifelse(acf_frame$Correlation>0,"darkgreen","red"),
+           color = "black") +
+  scale_y_continuous(limits = c(-1,1)) +
+  labs( title = "Corrélogramme des résidus - Fréquentation",
+    x = NULL,
+    y = "Corrélation",
+    subtitle = "Note : valeurs atypiques supprimées",
+    caption = "BUT Science des données") +
+  geom_text(aes(label = paste0(round(100*Correlation,0),"%")),
+            vjust = ifelse(acf_frame$Correlation > 0,-0.5,1.2)) +
+  theme_minimal() +
+    theme(plot.title = element_text(hjust = 0.5,
+                                    face = "bold"),
+          plot.subtitle = element_text(colour = "purple",
+                                       hjust = 0.5,
+                                       size = 10),
+          plot.caption = element_text(face="bold",hjust = 0))
+
+```
+
+On peut observer l’existence de trois corrélations significatives. Ces dernières sont au dessous de la ligne pointillée supérieure. On peut donc dire que la composante résiduelle contient de l’information.
+
+## Phase 6 : Prévisions
+
+```{r Prévisions et intervalles de prévisions,include = FALSE}
+
+# Prévision sur le jeu de données
+
+# Créons la suite du dataframe de départ
+df %>% mutate(
+              fit = NA,
+              lwr = NA,
+              upr = NA,
+              season = NA,
+              forecast_value = NA,
+              forecast_value.lwr = NA,
+              forecast_value.upr = NA
+              ) -> df
+
+
+# Créons le dataframe contenant les données de 2024 
+
+horizon = seq(as.Date("2023-10-01"),as.Date("2024-12-31"),by="months")
+
+t1 = as.Date("2019-01-01", format = "%Y-%m-%d")
+t2 = as.Date("2021-01-01", format = "%Y-%m-%d")
+
+Ind1 = horizon > t1 ; temps1 = (horizon - t1)*Ind1
+Ind2 = horizon > t2 ; temps2 = (horizon - t2)*Ind2
+
+df_24  = data.frame(date = horizon,date1 = temps1,date2 = temps2)
+
+# Prédiction des valeurs et de l'intervalle de confiance 
+# Prédisons la tendance
+predict.trend = predict(model,newdata=df_24, 
+                        interval = "prediction")
+predict.trend = zoo(predict.trend,order.by=df_24$date)
+
+# Modifier la tendance avec les coefficients saisonniers
+predict = predict.trend + c(coredata(varseason_coef[10:12]), coredata(varseason_coef[1:12]))
+
+# Prédiction avec Forecast
+
+model_predict = auto.arima(adjusted, seasonal = TRUE)
+prevision_24 = forecast(model_predict, h = 15)
+
+
+df_24 %>% 
+  select(date) %>% 
+  mutate(
+       value = NA, 
+       loess = NA, 
+       varseason = NA,
+       month = format(seq(from = as.Date("2023-10-01", format = "%Y-%m-%d"),
+           to = as.Date("2024-12-31", format = "%Y-%m-%d"),
+           by = "1 months"),"%b"),
+       date1 = temps1,
+       date2 = temps2,
+       model1 = NA,
+       coef = NA,
+       adjusted = NA,
+       residual = NA,
+       standardized.residual = NA,
+        fit = predict$fit,
+       lwr = predict$lwr,
+       upr = predict$upr,
+        season = c(coredata(varseason_coef[10:12]), coredata(varseason_coef[1:12])),
+        forecast_value = coredata(prevision_24$mean),
+        forecast_value.lwr = coredata(prevision_24$lower[1]),
+        forecast_value.upr = coredata(prevision_24$upper[1])
+        
+         ) -> df_24
+
+
+```
+
+### Visualisation de la chronique et des prévisions
+
+```{r Visualisation de la chronique et des prévisions, echo = FALSE}
+
+ggplot() +
+  geom_line(data = df, mapping = aes(x = date,
+                                   y = value),lwd = 1,
+            color = "blue") +
+  geom_line(data = df_24, mapping = aes(x = date,
+                                   y = fit),lwd = 1,
+            color="red") +
+  scale_x_date(breaks = seq(from = as.Date("2011-01-01", format = "%Y-%m-%d"),
+                                 to = as.Date("2024-12-31", format = "%Y"),
+                                 by = "4 years"),
+               date_labels = format("%b %Y")) +
+  labs(title = "Visualisation de la chronique et des prévisions",
+       x = "Période Janv. 2011 à Dec. 2024",
+       y = "Nombre de nuitées (milliers)",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_text(colour = "purple",
+                                    hjust = 0.5,
+                                    size = 10))
+
+
+```
+
+
+### Visualisation de la chronique et des intervalles de prévisions
+
+```{r Visualisation de la chronique et des intervalles de prévisions, echo = FALSE}
+
+ggplot() +
+  geom_line(data = df, mapping = aes(x = date,
+                                   y = value),lwd = 1,
+            color = "blue") +
+  geom_ribbon(data = df_24,
+              aes(x = date, y=fit, ymin = lwr, ymax = upr),
+              fill = "red", alpha=0.5,col="gray") +
+  scale_x_date(breaks = seq(from = as.Date("2011-01-01", format = "%Y-%m-%d"),
+                                 to = as.Date("2024-12-31", format = "%Y"),
+                                 by = "4 years"),
+               date_labels = format("%b %Y")) +
+  labs(title = "Visualisation de la chronique et des intervalles de prévisions",
+       x = "Période Janv. 2011 à Dec. 2024",
+       y = "Nombre de nuitées (milliers)",
+       subtitle = "Source : INSEE (Identifiant 010598624)")+
+  theme_minimal()+
+  theme(plot.title = element_text(hjust = 0.5,
+                                  face = "bold"),
+        plot.subtitle = element_text(colour = "purple",
+                                    hjust = 0.5,
+                                    size = 10))
+
+```
+
+On peut remarquer que les prédictions du nombre de nuitées en Normandie réalisées pour l’année 2024 sont en adéquation avec l’évolution de la série. Nous pouvons donc être satisfait de la modélisation.
+
+
+
+
+
+
